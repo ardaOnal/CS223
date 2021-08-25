@@ -1,0 +1,249 @@
+// Arda Onal CS 223 LAB05 CODE
+// combined module
+module combined_module( input logic clk, input logic [3:0] buttons, input logic [7:0] data, input logic [3:0] address,
+    output logic [11:0] sum, output logic [6:0] seg, output logic dp, output logic [3:0] an);
+    
+    logic [3:0] count1; // Counter for address 1
+    logic [3:0] count2; // Counter for address 2
+    
+    logic Prev, Next, Enter, Sum; // Logics for four buttons
+    
+    logic [11:0] tmpSum;
+    logic [7:0] readData1;
+    logic [7:0] readData2;
+    logic [11:0] summation;
+    
+    // Calling the debouncer methods for the buttons
+    debounce prev(clk, buttons[3], Previous);
+    debounce next(clk, buttons[2], Next);
+    debounce enter(clk, buttons[1], Enter);
+    debounce summ(clk, buttons[0], Sum);
+    
+    always_ff@ (posedge clk)
+    begin
+        if (Previous)
+        begin
+            if ( count1 != 0)
+                count1 <= count1 - 1; // Decrementing the index of address by one.
+            else
+                count1 <= 4'b1111; // This is case for address = 0, It goes back to address = 15.
+        end
+        else if (Next)
+        begin
+            if ( count1 == 4'b1111)
+                count1 <= 4'b0000; // This is case for address = 15, It goes to address = 0.
+            else
+                count1 <= count1 + 1; // Incrementing the index of address by one.
+        end  
+        else if (Sum)
+        begin
+            tmpSum <= summation; // If the sum button is clicked, it assigns the new summation to our inner variable.
+        end 
+    end  
+    // Calling the methods.
+    memory_module memory(clk, Enter,data,address,count1,count2,readData1,readData2);
+    SevSeg_4digit displayer(clk,count1,0,readData1[7:4],readData1[3:0],seg,dp,an);
+    ReduceSum_module sumModule(clk, Enter, readData2, summation, count2);
+    assign sum = tmpSum; // Assigning the inner summation to the output
+endmodule
+// debouncer module
+module debounce(input logic clk, input logic button,output logic pulse );
+
+logic [24:0] timer;
+typedef enum logic [1:0]{S0,S1,S2,S3} states;
+states state, nextState;
+logic gotInput;
+
+always_ff@(posedge clk)
+    begin    
+        state <= nextState;
+        if(gotInput)
+            timer <= 25000000;
+        else
+            timer <= timer - 1;
+    end
+always_comb
+    case(state)
+        S0: if(button) 
+            begin //startTimer
+                nextState = S1;    
+                gotInput = 1;
+            end
+            else begin nextState = S0; gotInput = 0; end
+        S1: begin nextState = S2; gotInput = 0; end
+        S2: begin nextState = S3; gotInput = 0; end
+        S3: begin if(timer == 0) nextState = S0; else nextState = S3; gotInput = 0; end
+        default: begin nextState = S0; gotInput = 0; end
+        endcase
+
+assign pulse = ( state == S1 );
+endmodule
+// memory module
+module memory_module(input logic clk,writeEnable,input logic [7:0] writeData,input logic [3:0] writeAdress, input logic [3:0] readAdress1, input logic [3:0] readAdress2,  output logic [7:0] readData1, output logic [7:0] readData2);
+    logic [7:0] RAM[15:0]; // 16x8 memory module
+    
+    always_ff @(posedge clk)
+    begin
+        if ( writeEnable)
+            RAM[writeAdress] <= writeData;
+    end  
+    
+    assign readData1 = RAM[readAdress1]; //Assigning the values in the speciced addresses to outputs
+    assign readData2 = RAM[readAdress2];
+endmodule
+module SevSeg_4digit(
+ input clk, 
+ input [3:0] in3, in2, in1, in0, //user inputs for each digit (hexadecimal value)
+ output [6:0]seg, logic dp, // just connect them to FPGA pins (individual LEDs).
+ output [3:0] an   // just connect them to FPGA pins (enable vector for 4 digits active low)
+ );
+ 
+// divide system clock (100Mhz for Basys3) by 2^N using a counter, which allows us to multiplex at lower speed
+localparam N = 18;
+logic [N-1:0] count = {N{1'b0}}; //initial value
+always@ (posedge clk)
+	count <= count + 1;
+
+ 
+logic [4:0]digit_val; // 7-bit register to hold the current data on output
+logic [3:0]digit_en;  //register for the 4 bit enable
+ 
+always@ (*)
+ begin
+ digit_en = 4'b1111; //default
+ digit_val = in0; //default
+ 
+  case(count[N-1:N-2]) //using only the 2 MSB's of the counter 
+    
+   2'b00 :  //select first 7Seg.
+    begin
+     digit_val = {1'b0, in0};
+     digit_en = 4'b1110;
+    end
+    
+   2'b01:  //select second 7Seg.
+    begin
+     digit_val = {1'b0, in1};
+     digit_en = 4'b1101;
+    end
+    
+   2'b10:  //select third 7Seg.
+    begin
+     digit_val = {1'b1, in2};
+     digit_en = 4'b1011;
+    end
+     
+   2'b11:  //select forth 7Seg.
+    begin
+     digit_val = {1'b0, in3};
+     digit_en = 4'b0111;
+    end
+  endcase
+ end
+// ReduceSum HLSM module
+module ReduceSum_module(input logic clock, enable, input logic [7:0] value, output logic [11:0] outputSum, output logic [3:0] address );
+        logic [4:0] counter = 5'b00000; // Initializing
+        logic [11:0] Sum = 12'b0; // Initializing, sum is 12 bits because if every 16 8 bit value is maximum we get a 12 bit value.
+        
+        typedef enum logic [1:0] {S0, S1, S2, S3} statetype;         
+        statetype [1:0] state, nextState;
+
+        // register 
+        always_ff @(posedge clock)
+        begin 
+             state <= nextState; 
+        end 
+
+        // state transition conditions
+        always_ff @ (posedge clock)
+        case(state) 
+            S0: // If enable is 1 it transitions to state1, otherwise remains in state0
+            begin 
+                if (enable)
+                    nextState <= S1;
+                else
+                    nextState <= S0; 
+            end 
+            S1: // Initialization state
+            begin 
+                counter <=  5'b0;
+                Sum <= 12'b0;
+                nextState <= S2;
+            end 
+            S2: // Counts until it is 15 and adds the value to the sum 15 times
+            begin
+                counter = counter + 1;
+                Sum = Sum + value;
+                if (counter != 5'b01111)// value of maximum count, remains its state until it gets to 15
+                    nextState <= S2;
+                else 
+                    nextState <= S3; // changes state when count is 15
+            end 
+            S3: 
+            begin 
+                Sum = Sum + value; // We added our value 15 times but we actually want to add it 16 times
+                outputSum = Sum; // Producing the output sum
+                nextState <= S0; // Going back to state0
+            end 
+            default:
+                nextState<= S0;
+         endcase
+         
+         assign address = counter; // Assigning output address
+endmodule
+// testbench for memory module
+module testbench_memory();
+    logic clk, writeEnable;
+    logic [3:0] writeAdress;
+    logic [7:0] writeData;
+    logic [3:0] readAdress1;
+    logic [3:0] readAdress2;
+    logic [7:0] readData1;
+    logic [7:0] readData2;
+    
+    memory_module dut( clk,writeEnable,writeData,writeAdress,readAdress1,readAdress2,readData1,readData2);
+    
+    always
+        begin
+            clk = 1; #1;
+            clk = 0; #1;
+        end
+    
+    initial begin
+        writeEnable = 1;
+        writeAdress = 4'b0;
+        writeData = 8'b0;
+        readAdress1 = 4'b0;
+        readAdress2 = 4'b0;
+        for ( int i  = 4'b0; i <= 4'b1111; i++) begin
+            #10;
+            writeAdress = i;
+            writeData = writeData + i;
+            
+            readAdress1 = i;
+            readAdress2 = i;
+            #10;
+        end
+     end
+endmodule
+// testbench for ReduceSum module
+`timescale 1ns / 1ps
+
+module ReduceSum_testbench();
+    logic clk, enable;
+    logic [7:0] value;
+    logic [11:0] sum; 
+    logic [3:0] address;
+
+    reducesum_Test dut( clk, enable, value, sum, address );
+
+    always
+        begin
+            clk = 1; #20; clk = 0; #20;
+        end
+
+    initial begin
+        enable = 1; sum = 0; address = 0;
+        value = 8'b00000001;
+    end
+endmodule
